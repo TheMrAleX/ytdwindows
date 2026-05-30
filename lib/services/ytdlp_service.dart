@@ -201,13 +201,12 @@ class YtdlpService {
     Future<void> run() async {
       try {
         final args = await _buildArgs(opts);
-        // En Windows usamos detachedWithStdio para evitar que aparezca una
-        // ventana de consola al spawnear yt-dlp.exe (subsistema CONSOLE).
-        // En Linux usamos normal porque necesitamos SIGSTOP/SIGCONT/SIGTERM.
-        final mode = Platform.isWindows
-            ? ProcessStartMode.detachedWithStdio
-            : ProcessStartMode.normal;
-        proc = await Process.start(binary, args, runInShell: false, mode: mode);
+        // SIEMPRE normal: necesitamos exitCode + stdio + kill(). En Windows,
+        // detachedWithStdio hace que el getter `exitCode` lance
+        // StateError("Process is detached") → toda descarga moría al instante.
+        // (Tradeoff: puede parpadear una consola al spawnear yt-dlp.exe.)
+        proc = await Process.start(binary, args,
+            runInShell: false, mode: ProcessStartMode.normal);
 
         proc!.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen((line) {
           final p = _parseProgress(line);

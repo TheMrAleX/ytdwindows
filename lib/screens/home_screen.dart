@@ -19,13 +19,15 @@ import '../widgets/quality_dialog.dart';
 class _Job {
   VideoInfo info;
   final String qualityTag;
+  final DownloadOptions opts;
   DownloadProgress? progress;
   String? error;
   bool done = false;
   bool paused = false;
+  bool queued = true; // arranca en cola; _pumpQueue lo lanza al haber slot.
   StreamSubscription? sub;
   DownloadHandle? handle;
-  _Job(this.info, this.qualityTag);
+  _Job(this.info, this.qualityTag, this.opts);
 }
 
 class HomeScreen extends StatefulWidget {
@@ -49,6 +51,9 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _ytdlpOutdated = false;
   AppSettings _settings = const AppSettings();
   final List<_Job> _jobs = [];
+
+  /// Máximo de descargas corriendo a la vez. El resto espera en cola.
+  static const int _maxConcurrent = 3;
 
   @override
   void initState() {
@@ -330,11 +335,38 @@ class _HomeScreenState extends State<HomeScreen> {
       cookiesBrowser: _settings.cookiesBrowser,
       cookiesFile: _settings.cookiesFile,
     );
-    final job = _Job(info, _qualityTag(r));
+    // El job entra a la cola (queued=true). _pumpQueue lo lanza cuando haya
+    // un slot libre (máx _maxConcurrent corriendo a la vez).
+    final job = _Job(info, _qualityTag(r), opts);
     _jobs.insert(0, job);
+    _urlController.clear();
     setState(() {});
+    _pumpQueue();
+    return job;
+  }
 
-    final handle = _yt.download(opts);
+  /// Cuántas descargas hay corriendo (lanzadas, sin terminar ni error).
+  int get _runningCount =>
+      _jobs.where((j) => !j.queued && !j.done && j.error == null).length;
+
+  /// Lanza jobs en cola (FIFO) hasta llenar los slots disponibles.
+  void _pumpQueue() {
+    var slots = _maxConcurrent - _runningCount;
+    if (slots <= 0) return;
+    // _jobs se inserta al frente (index 0 = más nuevo); reversed = más viejo
+    // primero → FIFO.
+    for (final j in _jobs.reversed) {
+      if (slots <= 0) break;
+      if (j.queued && j.error == null && !j.done) {
+        _beginJob(j);
+        slots--;
+      }
+    }
+  }
+
+  void _beginJob(_Job job) {
+    job.queued = false;
+    final handle = _yt.download(job.opts);
     job.handle = handle;
     job.sub = handle.stream.listen(
       (p) {
@@ -368,17 +400,17 @@ class _HomeScreenState extends State<HomeScreen> {
           job.error = e is YtdlpException ? e.message : e.toString();
           job.paused = false;
         });
+        _pumpQueue(); // slot liberado → arranca el siguiente en cola.
       },
       onDone: () {
         setState(() {
           if (job.error == null) job.done = true;
           job.paused = false;
         });
+        _pumpQueue();
       },
     );
-
-    _urlController.clear();
-    return job;
+    setState(() {});
   }
 
   void _pauseJob(_Job j) {
@@ -407,6 +439,11 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _cancelJob(_Job j) {
+    // Job en cola: nunca arrancó proceso. Quitarlo de la lista directo.
+    if (j.queued) {
+      setState(() => _jobs.remove(j));
+      return;
+    }
     if (j.paused) {
       // SIGTERM no llega a un proceso pausado; reanudar antes de cancelar.
       j.handle?.resume();
@@ -417,6 +454,7 @@ class _HomeScreenState extends State<HomeScreen> {
       j.error = 'Cancelado';
       j.paused = false;
     });
+    _pumpQueue(); // slot liberado → arranca el siguiente en cola.
   }
 
   Future<void> _dismissJob(_Job j) async {
@@ -498,8 +536,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // Stats agregados para la status bar.
-  ({int active, int done, int error, double speedBps, int? etaSec}) _stats() {
-    int active = 0, done = 0, errors = 0;
+  ({int active, int queued, int done, int error, double speedBps, int? etaSec})
+      _stats() {
+    int active = 0, queued = 0, done = 0, errors = 0;
     double speed = 0;
     int? etaMax;
     for (final j in _jobs) {
@@ -507,6 +546,8 @@ class _HomeScreenState extends State<HomeScreen> {
         done++;
       } else if (j.error != null) {
         errors++;
+      } else if (j.queued) {
+        queued++;
       } else {
         active++;
         final s = _parseSpeed(j.progress?.speed);
@@ -515,7 +556,14 @@ class _HomeScreenState extends State<HomeScreen> {
         if (e != null) etaMax = (etaMax == null || e > etaMax) ? e : etaMax;
       }
     }
-    return (active: active, done: done, error: errors, speedBps: speed, etaSec: etaMax);
+    return (
+      active: active,
+      queued: queued,
+      done: done,
+      error: errors,
+      speedBps: speed,
+      etaSec: etaMax
+    );
   }
 
   static double? _parseSpeed(String? s) {
@@ -760,6 +808,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         error: j.error,
                         done: j.done,
                         paused: j.paused,
+                        queued: j.queued,
                         onPause: Platform.isWindows ? null : () => _pauseJob(j),
                         onResume: Platform.isWindows ? null : () => _resumeJob(j),
                         onCancel: () => _cancelJob(j),
@@ -900,7 +949,14 @@ class _Toolbar extends StatelessWidget {
 
 class _StatusBar extends StatelessWidget {
   final String? outputDir;
-  final ({int active, int done, int error, double speedBps, int? etaSec}) stats;
+  final ({
+    int active,
+    int queued,
+    int done,
+    int error,
+    double speedBps,
+    int? etaSec
+  }) stats;
   final String Function(double) speedFormatter;
   final String Function(int) etaFormatter;
   final VoidCallback? onOpenDir;
@@ -969,6 +1025,14 @@ class _StatusBar extends StatelessWidget {
                 color: theme.hintColor,
               ),
             ],
+            const SizedBox(width: 8),
+          ],
+          if (stats.queued > 0) ...[
+            _StatChip(
+              icon: Icons.schedule,
+              label: '${stats.queued} en cola',
+              color: theme.hintColor,
+            ),
             const SizedBox(width: 8),
           ],
           if (stats.done > 0) ...[

@@ -10,6 +10,7 @@ class DownloadRow extends StatefulWidget {
   final String? error;
   final bool done;
   final bool paused;
+  final bool queued;
   final String qualityTag;
   final VoidCallback? onPause;
   final VoidCallback? onResume;
@@ -25,6 +26,7 @@ class DownloadRow extends StatefulWidget {
     this.error,
     this.done = false,
     this.paused = false,
+    this.queued = false,
     this.onPause,
     this.onResume,
     this.onCancel,
@@ -71,12 +73,13 @@ class _DownloadRowState extends State<DownloadRow>
     super.dispose();
   }
 
-  bool get _active => widget.error == null && !widget.done;
+  bool get _active => widget.error == null && !widget.done && !widget.queued;
 
   Color _accentForState(ColorScheme s) {
     if (widget.error != null) return s.error;
     if (widget.done) return Colors.green.shade600;
     if (widget.paused) return Colors.orange.shade700;
+    if (widget.queued) return s.outline;
     return s.primary;
   }
 
@@ -139,6 +142,7 @@ class _DownloadRowState extends State<DownloadRow>
                         paused: widget.paused,
                         done: widget.done,
                         error: widget.error,
+                        queued: widget.queued,
                       ),
                       const SizedBox(width: 8),
                       Expanded(
@@ -202,6 +206,7 @@ class _DownloadRowState extends State<DownloadRow>
                     error: widget.error,
                     done: widget.done,
                     paused: widget.paused,
+                    queued: widget.queued,
                   ),
                 ],
               ),
@@ -212,6 +217,7 @@ class _DownloadRowState extends State<DownloadRow>
               error: widget.error,
               active: _active,
               paused: widget.paused,
+              queued: widget.queued,
               onPause: widget.onPause,
               onResume: widget.onResume,
               onCancel: widget.onCancel,
@@ -404,16 +410,21 @@ class _StatusBadge extends StatelessWidget {
   final bool paused;
   final bool done;
   final String? error;
+  final bool queued;
   const _StatusBadge({
     required this.active,
     required this.paused,
     required this.done,
     required this.error,
+    this.queued = false,
   });
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    if (queued) {
+      return Icon(Icons.schedule, size: 16, color: scheme.outline);
+    }
     if (paused) {
       return Icon(Icons.pause_circle_filled, size: 16, color: Colors.orange.shade700);
     }
@@ -608,17 +619,29 @@ class _StatusLine extends StatelessWidget {
   final String? error;
   final bool done;
   final bool paused;
+  final bool queued;
   const _StatusLine({
     this.progress,
     this.error,
     required this.done,
     required this.paused,
+    this.queued = false,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
+    if (queued) {
+      return Text(
+        'En cola',
+        style: TextStyle(
+          fontSize: 12,
+          color: theme.hintColor,
+          fontWeight: FontWeight.w500,
+        ),
+      );
+    }
     if (error != null) {
       return Text(
         error!,
@@ -679,6 +702,7 @@ class _Actions extends StatelessWidget {
   final String? error;
   final bool active;
   final bool paused;
+  final bool queued;
   final VoidCallback? onPause;
   final VoidCallback? onResume;
   final VoidCallback? onCancel;
@@ -690,6 +714,7 @@ class _Actions extends StatelessWidget {
     required this.error,
     required this.active,
     required this.paused,
+    this.queued = false,
     this.onPause,
     this.onResume,
     this.onCancel,
@@ -702,6 +727,12 @@ class _Actions extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
+        if (queued && onCancel != null)
+          IconButton(
+            icon: const Icon(Icons.close, size: 22),
+            tooltip: 'Quitar de la cola',
+            onPressed: onCancel,
+          ),
         if (active && !paused && onPause != null)
           IconButton(
             icon: const Icon(Icons.pause, size: 22),

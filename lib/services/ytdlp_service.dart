@@ -116,6 +116,21 @@ class YtdlpService {
     }
   }
 
+  /// Entorno para spawnear yt-dlp.exe. En Windows fuerza UTF-8 + unbuffered:
+  /// - PYTHONUTF8/PYTHONIOENCODING: yt-dlp.exe (PyInstaller) si no, escribe en
+  ///   codepage de consola (cp1252) → títulos con tildes/ñ rompen el parseo.
+  /// - PYTHONUNBUFFERED: stdout a pipe es block-buffered en Python → sin esto
+  ///   el progreso no llega a la GUI hasta que el proceso termina.
+  Map<String, String>? _childEnv() {
+    if (!Platform.isWindows) return null;
+    return {
+      ...Platform.environment,
+      'PYTHONUTF8': '1',
+      'PYTHONIOENCODING': 'utf-8',
+      'PYTHONUNBUFFERED': '1',
+    };
+  }
+
   Future<bool> isAvailable() async {
     try {
       final r = await Process.run(binary, ['--version']);
@@ -206,9 +221,16 @@ class YtdlpService {
         // StateError("Process is detached") → toda descarga moría al instante.
         // (Tradeoff: puede parpadear una consola al spawnear yt-dlp.exe.)
         proc = await Process.start(binary, args,
-            runInShell: false, mode: ProcessStartMode.normal);
+            runInShell: false,
+            mode: ProcessStartMode.normal,
+            environment: _childEnv());
 
-        proc!.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen((line) {
+        // allowMalformed: en Windows yt-dlp.exe puede emitir bytes en codepage
+        // de consola (cp1252) pese a forzar UTF-8 — un byte inválido NO debe
+        // matar la subscription (mataba todo el progreso en la 1ª línea con
+        // título acentuado). LineSplitter por stream para flush incremental.
+        const dec = Utf8Decoder(allowMalformed: true);
+        proc!.stdout.transform(dec).transform(const LineSplitter()).listen((line) {
           final p = _parseProgress(line);
           if (p != null) controller.add(p);
         }, onError: (e) {
@@ -216,12 +238,13 @@ class YtdlpService {
         });
 
         final errBuf = StringBuffer();
-        proc!.stderr.transform(utf8.decoder).listen((data) {
-          errBuf.write(data);
-          for (final line in const LineSplitter().convert(data)) {
-            if (line.trim().isEmpty) continue;
-            controller.add(DownloadProgress(percent: -1, phase: 'log', raw: line));
-          }
+        proc!.stderr.transform(dec).transform(const LineSplitter()).listen((line) {
+          if (line.trim().isEmpty) return;
+          errBuf.writeln(line);
+          // El progreso puede caer en stderr según versión/plataforma —
+          // intentar parsear PROG| antes de tratarlo como log.
+          final p = _parseProgress(line);
+          controller.add(p ?? DownloadProgress(percent: -1, phase: 'log', raw: line));
         });
 
         final code = await proc!.exitCode;

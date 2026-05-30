@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=ytdlinux
+Comment=Descargador de YouTube con yt-dlp
+GenericName=Video Downloader
+Categories=AudioVideo;Network;
+Terminal=false
+StartupNotify=true
+Exec=__BIN__ %u
+Icon=ytdlinux
+MimeType=x-scheme-handler/ytdlinux;
